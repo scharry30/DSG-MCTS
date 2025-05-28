@@ -181,7 +181,7 @@ class MCTS_Task(SearchTask):
             propose_prompt = self.zero_single_propose_wrap_use_reflection(self.question, y, step_n, reflection,
                                                                           self.lang)
 
-        # 添加当前策略信息到提示中
+
         if self.active_strategy:
             strategy_info = f"\nUse {self.active_strategy.name} strategy: {self.active_strategy.description}"
             propose_prompt += strategy_info
@@ -375,13 +375,13 @@ class MCTS_Task(SearchTask):
         self.set_limit_type()
         self.clear_cache()
 
-        # 分析问题，选择初始策略
+
         self.analyze_problem()
 
-        # 执行搜索
+
         node, finish, root = MCTS(self)
 
-        # 在搜索过程中动态调整策略
+
         if node and node.y:
             self.dynamic_strategy_selection(node.y)
 
