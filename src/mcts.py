@@ -12,9 +12,6 @@ class Strategy:
         self.name = name
         self.keywords = keywords or []
 
-    def get_aligned_actions(self):
-        return self.keywords
-
 
 def get_next_steps_roll(y: str, step_n: int, mcts_task):
     next_steps = []
@@ -48,86 +45,32 @@ def get_next_steps_expand(node: treeNode, mcts_task):
 
 
     if hasattr(mcts_task, 'active_strategy') and mcts_task.active_strategy:
-        sorted_steps = sort_actions_by_utility(next_steps, mcts_task)
-        return sorted_steps
+        next_steps = sort_by_strategy_alignment(next_steps, mcts_task.active_strategy.keywords,
+                                                mcts_task.strategy_weight)
+
     return next_steps
 
 
-def sort_actions_by_utility(actions, mcts_task):
+def sort_by_strategy_alignment(actions, strategy_keywords, weight=0.5):
 
-    action_utilities = []
-
+    action_scores = []
     for action in actions:
 
-        reward = estimate_reward(action, mcts_task)
-
-        cost = estimate_cost(action)
-
-        strategy_bonus = strategy_alignment_bonus(action, mcts_task)
-
-        utility = reward - cost + strategy_bonus
-
-        action_utilities.append((utility, action))
+        alignment_score = 0
+        for keyword in strategy_keywords:
+            if keyword.lower() in action.lower():
+                alignment_score += weight
 
 
-    action_utilities.sort(reverse=True)
-
-    return [action for _, action in action_utilities]
+        length_score = 1.0 / (len(action) + 1)
 
 
-def estimate_reward(action, mcts_task):
-
-    return 1.0 / (len(action) + 1)
-
-
-def estimate_cost(action):
-
-    return 0.01 * len(action)
+        total_score = alignment_score + length_score
+        action_scores.append((total_score, action))
 
 
-def strategy_alignment_bonus(action, mcts_task):
-
-    if not hasattr(mcts_task, 'active_strategy') or not mcts_task.active_strategy:
-        return 0.0
-
-
-    for keyword in mcts_task.active_strategy.keywords:
-        if keyword in action:
-            return mcts_task.strategy_weight
-    return 0.0
-
-
-def calculate_path_diversity(path, existing_paths):
-    """计算路径多样性"""
-    if not existing_paths:
-        return 1.0
-
-
-    min_distance = min(edit_distance(path, existing) for existing in existing_paths)
-    normalized_diversity = min_distance / max(len(path), 1)
-
-    return normalized_diversity
-
-
-def edit_distance(s1, s2):
-
-    if len(s1) < len(s2):
-        return edit_distance(s2, s1)
-
-    if len(s2) == 0:
-        return len(s1)
-
-    previous_row = range(len(s2) + 1)
-    for i, c1 in enumerate(s1):
-        current_row = [i + 1]
-        for j, c2 in enumerate(s2):
-            insertions = previous_row[j + 1] + 1
-            deletions = current_row[j] + 1
-            substitutions = previous_row[j] + (c1 != c2)
-            current_row.append(min(insertions, deletions, substitutions))
-        previous_row = current_row
-
-    return previous_row[-1]
+    action_scores.sort(reverse=True)
+    return [action for _, action in action_scores]
 
 
 def randomPolicy(node: treeNode, mcts_task):
@@ -146,7 +89,7 @@ def randomPolicy(node: treeNode, mcts_task):
         next_steps = get_next_steps_roll(strs, cur_step, mcts_task)
         if not next_steps:
             break
-        action = random.choice(next_steps)  # str
+        action = random.choice(next_steps)
         strs = strs + action
         cur_step += 1
         value = mcts_task.get_step_value(strs)
@@ -174,13 +117,13 @@ def greedyPolicy(node: treeNode, mcts_task):
         return node.V
 
     for i in range(mcts_task.roll_forward_steps):
-        actions = get_next_steps_roll(strs, cur_step, mcts_task)  # str_list
+        actions = get_next_steps_roll(strs, cur_step, mcts_task)
         if not actions:
             break
 
 
         if hasattr(mcts_task, 'active_strategy') and mcts_task.active_strategy:
-            actions = sort_actions_by_utility(actions, mcts_task)
+            actions = sort_by_strategy_alignment(actions, mcts_task.active_strategy.keywords, mcts_task.strategy_weight)
 
         new_ys = [strs + action for action in actions]
         cur_step += 1
@@ -203,8 +146,8 @@ def MCTS_search(mcts_task):
     root = treeNode('')
 
 
-    if not hasattr(mcts_task, 'existing_paths'):
-        mcts_task.existing_paths = set()
+    if not hasattr(mcts_task, 'high_value_paths'):
+        mcts_task.high_value_paths = set()
 
     if mcts_task.limit_type == 'time':
         timeLimit = time.time() + mcts_task.time_limit / 1000
@@ -222,7 +165,6 @@ def MCTS_search(mcts_task):
 
 
 def executeRound(root, mcts_task):
-
     flag, node = selectNode(root, mcts_task)
     if flag:
         if mcts_task.sample_value != 'full':
@@ -285,11 +227,8 @@ def expand(node: treeNode, mcts_task):
             child.update_value(value)
 
 
-            if hasattr(mcts_task, 'existing_paths'):
-                diversity = calculate_path_diversity(child.y, mcts_task.existing_paths)
-
-                if hasattr(child, 'path_diversity'):
-                    child.path_diversity = diversity
+            if value >= mcts_task.end_gate and hasattr(mcts_task, 'high_value_paths'):
+                mcts_task.high_value_paths.add(child.y)
 
             if mcts_task.sample_value == 'full':
                 if mcts_task.use_reflection == 'common':
@@ -319,21 +258,28 @@ def getBestChild(node, mcts_task):
 
     for child in node.children.values():
 
+        exploitation = child.V
         exploration = mcts_task.exploration_constant * math.sqrt(
             2 * math.log(node.numVisits) / child.numVisits) if child.numVisits > 0 else mcts_task.INF
 
+
         strategy_bonus = 0.0
         if hasattr(mcts_task, 'active_strategy') and mcts_task.active_strategy:
-            strategy_bonus = strategy_alignment_bonus(child.pcd, mcts_task)
+            for keyword in mcts_task.active_strategy.keywords:
+                if keyword.lower() in child.pcd.lower():
+                    strategy_bonus += mcts_task.strategy_weight
+                    break
 
 
         diversity_bonus = 0.0
-        if hasattr(child, 'path_diversity'):
-            diversity_bonus = mcts_task.diversity_weight * child.path_diversity if hasattr(mcts_task,
-                                                                                           'diversity_weight') else 0.0
+        if hasattr(mcts_task, 'high_value_paths') and mcts_task.high_value_paths and hasattr(mcts_task,
+                                                                                             'diversity_weight'):
+
+            if child.y not in mcts_task.high_value_paths:
+                diversity_bonus = mcts_task.diversity_weight
 
 
-        nodeValue = child.V + exploration + strategy_bonus + diversity_bonus
+        nodeValue = exploitation + exploration + strategy_bonus + diversity_bonus
 
         if nodeValue > bestValue:
             bestValue = nodeValue
@@ -352,8 +298,8 @@ def MCTS(mcts_task):
         mcts_task.strategy_weight = 0.5
     if not hasattr(mcts_task, 'diversity_weight'):
         mcts_task.diversity_weight = 0.2
-    if not hasattr(mcts_task, 'existing_paths'):
-        mcts_task.existing_paths = set()
+    if not hasattr(mcts_task, 'high_value_paths'):
+        mcts_task.high_value_paths = set()
 
     root, node, finish = MCTS_search(mcts_task)
 
@@ -368,4 +314,5 @@ def MCTS(mcts_task):
                 return best_node, -1, root
         else:
             return None, -1, root
+
 
